@@ -87,16 +87,26 @@ class SearchRequests(BaseModel):
 
 def retrieve_context(user_question: str) -> list[dict[str, Any]]:
     """Extract search parameters from user query and retrieve matching users."""
+
+    # Initialize the parser with your model
     parser = PydanticOutputParser(pydantic_object=SearchRequests)
+
+    # Get format instructions for the LLM prompt
+    format_instructions = parser.get_format_instructions()
+
+    # Create a prompt that includes these instructions
     messages = [SystemMessagePromptTemplate.from_template(template=QUERY_ANALYSIS_PROMPT),
                 HumanMessage(content=user_question)]
-    prompt = ChatPromptTemplate.from_messages(messages=messages).partial(
-        format_instructions=parser.get_format_instructions())
+    prompt = ChatPromptTemplate.from_messages(messages=messages).partial(format_instructions=format_instructions)
 
-    search_requests: SearchRequests = (prompt | llm_client | parser).invoke({})
+    # Chain the prompt and model
+    chain = prompt | llm_client | parser
 
-    if search_parameters := search_requests.search_request_parameters:
-        requests_dict = {p.search_field.value: p.search_value for p in search_parameters}
+    # Invoke the chain and get the structured output
+    search_requests: SearchRequests = chain.invoke({})
+
+    if search_params := search_requests.search_request_parameters:
+        requests_dict = {search_param.search_field.value: search_param.search_value for search_param in search_params}
         print(f"Searching with parameters: {requests_dict}")
         return user_client.search_users(**requests_dict)
 
