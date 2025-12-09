@@ -137,12 +137,17 @@ def main():
             if user_question.lower() in ['quit', 'exit']:
                 break
 
+            print("\n--- Retrieving context ---")
             context = retrieve_context(user_question)
             if context:
+                print("\n--- Augmenting prompt ---")
                 augmented_prompt = augment_prompt(user_question, context)
-                generate_answer(augmented_prompt)
+
+                print("\n--- Generating answer ---")
+                answer = generate_answer(augmented_prompt)
+                print(f"\nAnswer: {answer}\n")
             else:
-                print("No relevant information found")
+                print("\n--- No relevant information found ---")
 
 
 if __name__ == "__main__":
