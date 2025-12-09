@@ -11,16 +11,6 @@ from pydantic import SecretStr, BaseModel, Field
 from task._constants import DIAL_URL, API_KEY
 from task.user_client import UserClient
 
-"""
- HOBBIES SEARCHER:
- Searches users by hobbies and provides their full info in JSON format:
- Input: In need to gather people that love to go to mountains
- Output:
-    rock climbing: [{full user info JSON},...],
-    hiking: [{full user info JSON},...],
-    camping: [{full user info JSON},...]
-"""
-
 SYSTEM_PROMPT = """You are a RAG-powered assistant that groups users by their hobbies.
 
 ## Flow:
@@ -43,12 +33,11 @@ USER_PROMPT = """## CONTEXT:
 
 llm_client = AzureChatOpenAI(
     temperature=0.0,
-    azure_deployment='gpt-4o',
+    azure_deployment="gpt-4o",
     azure_endpoint=DIAL_URL,
     api_key=SecretStr(API_KEY),
-    api_version="",
+    api_version=""
 )
-
 
 class GroupingResult(BaseModel):
     hobby: str = Field(description="Hobby. Example: football, painting, horsing, photography, bird watching...")
@@ -82,35 +71,30 @@ class InputGrounder:
         print("🔍 Loading all users for initial vectorstore...")
         users = self.user_client.get_all_users()
         documents = [Document(id=user.get('id'), page_content=format_user_document(user)) for user in users]
-        batches = [documents[i:i + batch_size] for i in range(0, len(documents), batch_size)]
+        document_batches = [documents[i:i + batch_size] for i in range(0, len(documents), batch_size)]
 
         print("Setup vectorstore...")
         self.vectorstore = Chroma(collection_name="users", embedding_function=self.embeddings)
-        tasks = [
-            self.vectorstore.aadd_documents(batch)
-            for batch in batches
-        ]
+        tasks = [self.vectorstore.aadd_documents(batch) for batch in document_batches]
         await asyncio.gather(*tasks)
         print("Setup FINISHED")
 
     async def _update_vectorstore(self):
         users = self.user_client.get_all_users()
+        users_dict = {str(user.get('id')): user for user in users}
+        users_ids_set = set(str(user.get('id')) for user in users)
+
         vectorstore_data = self.vectorstore.get()
         vectorstore_ids_set = set(str(user_id) for user_id in vectorstore_data.get("ids", []))
 
-        users_dict = {str(user.get('id')): user for user in users}
-        users_ids_set = set(users_dict.keys())
-
-        new_user_ids = users_ids_set - vectorstore_ids_set
         ids_to_delete = vectorstore_ids_set - users_ids_set
-
-        new_documents = [
-            Document(id=user_id, page_content=format_user_document(users_dict[user_id]))
-            for user_id in new_user_ids
-        ]
 
         if ids_to_delete:
             self.vectorstore.delete(list(ids_to_delete))
+
+        new_user_ids = users_ids_set - vectorstore_ids_set
+        new_documents = [Document(id=user_id, page_content=format_user_document(users_dict[user_id])) for user_id in
+                         new_user_ids]
 
         if new_documents:
             if len(new_documents) > 50:
@@ -126,36 +110,30 @@ class InputGrounder:
         else:
             await self._update_vectorstore()
 
-        print("Retrieving context...")
-        relevant_docs = self.vectorstore.similarity_search_with_relevance_scores(
-            query, k=k, score_threshold=score
+        relevant_documents = self.vectorstore.similarity_search_with_relevance_scores(
+            query=query, k=k, score_threshold=score
         )
 
         context_parts = []
-        for doc, relevance_score in relevant_docs:
+        for doc, relevance_score in relevant_documents:
             context_parts.append(doc.page_content)
             print(f"Retrieved (Score: {relevance_score:.3f}): {doc.page_content}")
         print(f"{'=' * 100}\n")
 
         return "\n\n".join(context_parts)
 
-    def augment_prompt(self, query: str, context: str) -> str:
+    @staticmethod
+    def augment_prompt(query: str, context: str) -> str:
         return USER_PROMPT.format(context=context, query=query)
 
-    def generate_answer(self, augmented_prompt: str) -> GroupingResults:
+    @staticmethod
+    def generate_answer(augmented_prompt: str) -> GroupingResults:
         parser = PydanticOutputParser(pydantic_object=GroupingResults)
-
-        messages = [
-            SystemMessagePromptTemplate.from_template(template=SYSTEM_PROMPT),
-            HumanMessage(content=augmented_prompt),
-        ]
-
+        messages = [SystemMessagePromptTemplate.from_template(template=SYSTEM_PROMPT),
+                    HumanMessage(content=augmented_prompt)]
         prompt = ChatPromptTemplate.from_messages(messages=messages).partial(
-            format_instructions=parser.get_format_instructions(),
-        )
-
+            format_instructions=parser.get_format_instructions())
         grouping_results: GroupingResults = (prompt | llm_client | parser).invoke({})
-
         return grouping_results
 
 
@@ -169,7 +147,6 @@ class OutputGrounder:
             print(f"Users:\n {await self._find_users(grouping_result.user_ids)}\n")
             print("----------\n")
 
-
     async def _find_users(self, ids: list[int]) -> list[dict[str, Any]]:
         async def safe_get_user(user_id: int) -> Optional[dict[str, Any]]:
             try:
@@ -181,17 +158,18 @@ class OutputGrounder:
                 raise  # Re-raise non-404 errors
 
         tasks = [safe_get_user(user_id) for user_id in ids]
-        users_results = await asyncio.gather(*tasks)
+        possible_users = await asyncio.gather(*tasks)
 
-        return [user for user in users_results if user is not None]
+        return [user for user in possible_users if user is not None]
+
 
 async def main():
     embeddings = AzureOpenAIEmbeddings(
-        deployment='text-embedding-3-small-1',
+        deployment="text-embedding-3-small-1",
         azure_endpoint=DIAL_URL,
         api_key=SecretStr(API_KEY),
         dimensions=384,
-        check_embedding_ctx_length=False,
+        check_embedding_ctx_length=False
     )
     output_grounder = OutputGrounder()
 
@@ -205,11 +183,10 @@ async def main():
             user_question = input("> ").strip()
             if user_question.lower() in ['quit', 'exit']:
                 break
-
-            context = await rag.retrieve_context(user_question)
+            context = await rag.retrieve_context(query=user_question)
             augmented_prompt = rag.augment_prompt(user_question, context)
-            grouping_results = rag.generate_answer(augmented_prompt)
-            await output_grounder.ground_response(grouping_results)
+            answer = rag.generate_answer(augmented_prompt)
+            await output_grounder.ground_response(answer)
 
 
 if __name__ == "__main__":
